@@ -97,6 +97,7 @@ type RelayPushConfig struct {
 type RelayPullConfig struct {
 	Enable bool   `json:"enable"`
 	Addr   string `json:"addr"`
+	Exec   string `json:"exec"`
 }
 
 type HTTPAPIConfig struct {

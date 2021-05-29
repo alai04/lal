@@ -9,8 +9,11 @@
 package logic
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"html/template"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -57,6 +60,7 @@ type Group struct {
 	pullEnable bool
 	pullURL    string
 	pullProxy  *pullProxy
+	execProxy  *execProxy
 	// sub
 	rtmpSubSessionSet    map[*rtmp.ServerSession]struct{}
 	httpflvSubSessionSet map[*httpflv.SubSession]struct{}
@@ -100,6 +104,11 @@ type pushProxy struct {
 	pushSession *rtmp.PushSession
 }
 
+type execProxy struct {
+	isExecuting bool
+	execCmd     *exec.Cmd
+}
+
 func NewGroup(appName string, streamName string, pullEnable bool, pullURL string) *Group {
 	uk := base.GenUKGroup()
 
@@ -129,6 +138,7 @@ func NewGroup(appName string, streamName string, pullEnable bool, pullURL string
 		rtmpGopCache:         NewGOPCache("rtmp", uk, config.RTMPConfig.GOPNum),
 		httpflvGopCache:      NewGOPCache("httpflv", uk, config.HTTPFLVConfig.GOPNum),
 		pullProxy:            &pullProxy{},
+		execProxy:            &execProxy{},
 		url2PushProxy:        url2PushProxy,
 		pullEnable:           pullEnable,
 		pullURL:              pullURL,
@@ -943,10 +953,45 @@ func (group *Group) write2RTMPSubSessions(b []byte) {
 }
 
 func (group *Group) stopPullIfNeeded() {
-	if group.pullProxy.pullSession != nil && !group.hasOutSession() {
-		nazalog.Infof("[%s] stop pull since no sub session.", group.UniqueKey)
-		group.pullProxy.pullSession.Dispose()
+	if !group.hasOutSession() {
+		if group.pullProxy.pullSession != nil {
+			nazalog.Infof("[%s] stop pull since no sub session.", group.UniqueKey)
+			group.pullProxy.pullSession.Dispose()
+		} else if group.execProxy.execCmd != nil {
+			nazalog.Infof("[%s] kill exec push since no sub session.", group.UniqueKey)
+			if group.execProxy.execCmd.Process.Kill() == nil {
+				go group.execProxy.execCmd.Wait()
+			}
+			group.execProxy.isExecuting = false
+		}
 	}
+}
+
+func (group *Group) execPull(execTpl string) {
+	var err error
+	defer func() {
+		if err != nil {
+			nazalog.Errorf("[%s] Exec pull error: %v", group.UniqueKey, err)
+			group.execProxy.isExecuting = false
+		}
+	}()
+
+	names := struct{ AppName, StreamName string }{group.appName, group.streamName}
+	tmpl, err := template.New("exec").Parse(execTpl)
+	if err != nil {
+		return
+	}
+	var tpl bytes.Buffer
+	err = tmpl.Execute(&tpl, names)
+	if err != nil {
+		return
+	}
+	cmdStr := tpl.String()
+
+	nazalog.Infof("[%s] start exec push. cmd=%s", group.UniqueKey, cmdStr)
+	cmdStrs := strings.Split(cmdStr, " ")
+	group.execProxy.execCmd = exec.Command(cmdStrs[0], cmdStrs[1:]...)
+	err = group.execProxy.execCmd.Start()
 }
 
 func (group *Group) pullIfNeeded() {
@@ -959,6 +1004,17 @@ func (group *Group) pullIfNeeded() {
 	if group.hasInSession() {
 		return
 	}
+
+	// 配置了 relay_pull.exec
+	if len(config.RelayPullConfig.Exec) > 0 {
+		if group.execProxy.isExecuting {
+			return
+		}
+		group.execProxy.isExecuting = true
+		group.execPull(config.RelayPullConfig.Exec)
+		return
+	}
+
 	// 正在回源中
 	if group.pullProxy.isPulling {
 		return
