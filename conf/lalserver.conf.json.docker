@@ -52,7 +52,7 @@
   "relay_pull": {
     "enable": true,
     "addr": "192.168.201.14:1935",
-    "exec": "ffmpeg -re -stream_loop -1 -i /Users/alai04/projects/demo-flv/test.mp4 -c copy -f flv rtmp://localhost/{{.AppName}}/{{.StreamName}}"
+    "exec": "ffmpeg -re -stream_loop -1 -i static/test.mp4 -c copy -f flv rtmp://localhost/{{.AppName}}/{{.StreamName}}"
   },
   "http_api": {
     "enable": true,
